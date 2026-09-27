@@ -1,0 +1,395 @@
+dialog XDCC_GUI {
+  title "XDCC Monitor & Automation Suite (Super Saiyan)"
+  size -1 -1 350 460
+  option dbu
+
+  ; --- Search Section ---
+  box "Search Channel Database", 1, 5 5 340 115
+  text "Search:", 2, 10 17 25 10
+  edit "", 3, 35 15 105 10, autohs
+  text "Res:", 4, 145 17 15 10
+  combo 5, 160 15 45 50, drop
+  text "Codec:", 28, 210 17 20 10
+  combo 29, 230 15 50 50, drop
+  text "Year:", 6, 285 17 15 10
+  edit "", 7, 305 15 35 10, autohs
+
+  text "Sort By:", 23, 10 32 25 10
+  combo 24, 35 30 90 50, drop
+  check "Unique Titles Only", 26, 130 31 70 10
+  button "Search", 8, 205 30 135 12, default
+
+  list 9, 10 45 330 50, size vsbar multsel extsel
+  button "Add Selected to Queue", 10, 10 100 250 12
+  button "Copy /MSG", 27, 265 100 75 12
+
+  ; --- Staging Queue ---
+  box "Staging Queue (Pending Requests)", 16, 5 120 340 70
+  list 17, 10 130 330 40, size vsbar multsel extsel
+  button "Download All (Push to Active)", 18, 10 173 145 12
+  button "Remove Selected", 19, 160 173 95 12
+
+  ; --- Active Transfers & Queue Tracking ---
+  box "Active Transfers & Bot Queues", 40, 5 195 340 70
+  list 41, 10 205 330 40, size vsbar multsel extsel
+  button "Cancel / Remove Selected", 42, 10 248 135 12
+  button "Clear Completed", 43, 150 248 90 12
+
+  ; --- Live Log ---
+  box "Live Action Log", 11, 5 270 340 75
+  list 12, 10 280 330 55, size vsbar
+
+  ; --- Advanced Settings ---
+  box "Advanced Settings & Paths", 30, 5 355 340 85
+
+  text "Move Downloads To:", 31, 10 367 65 10
+  edit "", 32, 75 365 235 10, autohs
+  button "Dir", 36, 315 364 25 12
+
+  text "Database Save Path:", 33, 10 382 65 10
+  edit "", 34, 75 380 235 10, autohs
+  button "Dir", 37, 315 379 25 12
+
+  text "ntfy.sh Topic:", 13, 10 397 40 10
+  edit "", 14, 50 395 115 10, autohs
+  text "DB Size: Loading...", 35, 175 397 165 10, right
+
+  button "Save Config & DB", 38, 175 410 80 12
+  button "Clear Logs", 15, 265 410 75 12
+
+  ; Hidden lists
+  list 21, 0 0 0 0, hide
+  list 22, 0 0 0 0, hide
+  list 25, 0 0 0 0, hide sort
+  list 44, 0 0 0 0, hide
+}
+
+alias xdcc { dialog -m XDCC_GUI XDCC_GUI }
+
+alias -l calc_bytes {
+  var %v = $1 | if (%v == $null || %v == ?) return 0
+  var %num = $regsubex(%v, /[^\d\.]/g, )
+  if (G isin %v) return $calc(%num * 1073741824)
+  if (M isin %v) return $calc(%num * 1048576)
+  if (K isin %v) return $calc(%num * 1024)
+  return %num
+}
+
+on *:dialog:XDCC_GUI:init:0:{
+  ; Wipe any corrupted memory variables from previous versions
+  unset %xdcc_queue 
+
+  if (!%xdcc_db_path) { set %xdcc_db_path $mircdir }
+  if (!%xdcc_dl_path) { set %xdcc_dl_path $getdir }
+  if ($right(%xdcc_db_path, 1) != \) { set %xdcc_db_path %xdcc_db_path $+ \ }
+  if ($right(%xdcc_dl_path, 1) != \) { set %xdcc_dl_path %xdcc_dl_path $+ \ }
+  if (!%xdcc_ntfy_topic) { set %xdcc_ntfy_topic my_xdcc_alerts }
+
+  did -a $dname 32 %xdcc_dl_path | did -a $dname 34 %xdcc_db_path | did -a $dname 14 %xdcc_ntfy_topic
+
+  if (!$hget(xdcc_v4)) { hmake xdcc_v4 2000 | if ($isfile($qt(%xdcc_db_path $+ xdcc_db.dat))) { hload -b xdcc_v4 $qt(%xdcc_db_path $+ xdcc_db.dat) } }
+
+  did -a $dname 5 Any | did -a $dname 5 2160p | did -a $dname 5 1080p | did -a $dname 5 720p | did -a $dname 5 480p | did -c $dname 5 1
+  did -a $dname 29 Any | did -a $dname 29 x264/h264 | did -a $dname 29 x265/HEVC | did -c $dname 29 1
+  did -a $dname 24 Name (A-Z) | did -a $dname 24 Name (Z-A) | did -a $dname 24 Newest First | did -a $dname 24 Oldest First
+  did -a $dname 24 Size (Largest) | did -a $dname 24 Size (Smallest) | did -a $dname 24 Speed (Fastest) | did -c $dname 24 1 | did -c $dname 26
+
+  update_db_stats
+}
+
+on *:dialog:XDCC_GUI:close:0:{ if ($hget(xdcc_v4)) { hsave -b xdcc_v4 $qt(%xdcc_db_path $+ xdcc_db.dat) } }
+on *:EXIT:{ if ($hget(xdcc_v4)) { hsave -b xdcc_v4 $qt(%xdcc_db_path $+ xdcc_db.dat) } }
+
+on *:dialog:XDCC_GUI:edit:32:{ set %xdcc_dl_path $did(32) | if ($right(%xdcc_dl_path, 1) != \) { set %xdcc_dl_path %xdcc_dl_path $+ \ } }
+on *:dialog:XDCC_GUI:edit:34:{ set %xdcc_db_path $did(34) | if ($right(%xdcc_db_path, 1) != \) { set %xdcc_db_path %xdcc_db_path $+ \ } }
+on *:dialog:XDCC_GUI:edit:14:{ set %xdcc_ntfy_topic $did(14) }
+
+alias -l update_db_stats {
+  if ($dialog(XDCC_GUI)) {
+    var %size = $file(%xdcc_db_path $+ xdcc_db.dat).size
+    var %size_str = $iif(%size, $round($calc(%size / 1024), 2) KB, 0 KB)
+    if ($calc(%size / 1024 / 1024) >= 1) { %size_str = $round($calc(%size / 1024 / 1024), 2) MB }
+    did -ra XDCC_GUI 35 Database Size: %size_str
+  }
+}
+
+alias ntfy_alert {
+  var %topic = $1, %body = $2-
+  if (%topic == $null) return
+  var %req = ntfy_ $+ $ticks
+  comopen %req MSXML2.ServerXMLHTTP
+  if (!$comerr) {
+    var %x = $com(%req, open, 1, bstr, POST, bstr, https://ntfy.sh/ $+ %topic, bool, false)
+    var %x = $com(%req, setRequestHeader, 1, bstr, Title, bstr, XDCC Monitor)
+    var %x = $com(%req, send, 1, bstr, %body)
+    comclose %req
+  }
+}
+
+on *:dialog:XDCC_GUI:sclick:*:{
+  if ($did == 36) { var %d = $sdir(%xdcc_dl_path, Select folder for downloads:) | if (%d) { set %xdcc_dl_path %d | did -ra XDCC_GUI 32 %d } }
+  elseif ($did == 37) { var %d = $sdir(%xdcc_db_path, Select DB save path:) | if (%d) { set %xdcc_db_path %d | did -ra XDCC_GUI 34 %d } }
+  elseif ($did == 38) { if ($hget(xdcc_v4)) { hsave -b xdcc_v4 $qt(%xdcc_db_path $+ xdcc_db.dat) } | update_db_stats | did -i XDCC_GUI 12 1 [System] Configuration Saved. }
+  elseif ($did == 15) { did -r XDCC_GUI 12 }
+
+  ; --- Search Logic ---
+  elseif ($did == 8) {
+    did -r XDCC_GUI 9 | did -r XDCC_GUI 21 | did -r XDCC_GUI 25
+    var %search = $did(XDCC_GUI, 3).text, %filter_res = $did(XDCC_GUI, 5).seltext, %filter_codec = $did(XDCC_GUI, 29).seltext, %filter_year = $did(XDCC_GUI, 7).text, %sort_mode = $did(XDCC_GUI, 24).seltext, %unique = $did(XDCC_GUI, 26).state
+    var %wc_search = $iif(%search != $null, * $+ $replace(%search, $chr(32), *) $+ *, $null), %i = 1
+
+    if ($hget(xdcc_sort)) hfree xdcc_sort
+    if ($hget(xdcc_unique)) hfree xdcc_unique
+    hmake xdcc_sort 2000 | hmake xdcc_unique 2000
+
+    while (%i <= $hget(xdcc_v4, 0).item) {
+      var %item = $hget(xdcc_v4, %i).item, %data = $hget(xdcc_v4, %i).data
+      var %bot = $gettok(%data, 1, 164), %pack = $gettok(%data, 2, 164), %res = $gettok(%data, 3, 164), %yr = $gettok(%data, 4, 164), %time = $iif($gettok(%data, 5, 164), $v1, 0), %size = $iif($gettok(%data, 6, 164), $v1, ?), %speed = $iif($gettok(%data, 7, 164), $v1, ?)
+      var %match = $true
+
+      if (%wc_search != $null) && (%wc_search !iswm %item) { var %match = $false }
+      if (%filter_res != Any) && (%filter_res != %res) { var %match = $false }
+      if (%filter_year != $null) && (%filter_year != %yr) { var %match = $false }
+      if (%filter_codec == x264/h264) && (*x264* !iswm %item) && (*h264* !iswm %item) { var %match = $false }
+      if (%filter_codec == x265/HEVC) && (*x265* !iswm %item) && (*hevc* !iswm %item) { var %match = $false }
+      if (%match) && (%unique == 1) { if ($hget(xdcc_unique, %item)) { var %match = $false } | else { hadd xdcc_unique %item 1 } }
+
+      if (%match) {
+        var %sort_key = %item
+        if (%sort_mode == Newest First) { %sort_key = $base($calc(9999999999 - %time), 10, 10, 15) }
+        elseif (%sort_mode == Oldest First) { %sort_key = $base(%time, 10, 10, 15) }
+        elseif (%sort_mode == Size (Largest)) { %sort_key = $base($calc(999999999999999 - $calc_bytes(%size)), 10, 10, 16) }
+        elseif (%sort_mode == Size (Smallest)) { %sort_key = $base($calc_bytes(%size), 10, 10, 16) }
+        elseif (%sort_mode == Speed (Fastest)) { %sort_key = $base($calc(999999999999999 - $calc_bytes(%speed)), 10, 10, 16) }
+        did -a XDCC_GUI 25 %sort_key $+ $chr(164) $+ %bot $+ $chr(164) $+ %pack $+ $chr(164) $+ %size $+ $chr(164) $+ %speed $+ $chr(164) $+ %item
+      }
+      inc %i
+    }
+
+    var %total_matches = $did(XDCC_GUI, 25).lines, %s = $iif(%sort_mode == Name (Z-A), %total_matches, 1)
+    while (%s > 0 && %s <= %total_matches) {
+      var %line = $did(XDCC_GUI, 25, %s).text, %info_tag = $gettok(%line, 4, 164)
+      if ($gettok(%line, 5, 164) != $null && $gettok(%line, 5, 164) != ?) { %info_tag = %info_tag $+ $chr(32) $+ $chr(124) $+ $chr(32) $+ $gettok(%line, 5, 164) }
+      did -a XDCC_GUI 9 # $+ $gettok(%line, 3, 164) ( $+ %info_tag $+ ) $chr(187) $gettok(%line, 6-, 164)
+      did -a XDCC_GUI 21 $gettok(%line, 2, 164) $+ $chr(164) $+ $gettok(%line, 3, 164) $+ $chr(164) $+ $gettok(%line, 6-, 164)
+      if (%sort_mode == Name (Z-A)) dec %s | else inc %s
+    }
+    did -i XDCC_GUI 12 1 [Search] Found %total_matches results.
+    if ($hget(xdcc_unique)) hfree xdcc_unique | update_db_stats
+  }
+
+  elseif ($did == 27) {
+    if ($did(XDCC_GUI, 9, 0).sel) {
+      var %line = $did(XDCC_GUI, 21, $did(XDCC_GUI, 9, 1).sel).text
+      clipboard /msg $gettok(%line, 1, 164) xdcc send $gettok(%line, 2, 164)
+      did -i XDCC_GUI 12 1 [System] Command copied to clipboard!
+    }
+  }
+
+  elseif ($did == 10) { add_to_queue }
+  elseif ($did == 19) { remove_from_queue }
+
+  ; --- Download All Queue ---
+  elseif ($did == 18) {
+    var %total_q = $did(XDCC_GUI, 17).lines
+    if (%total_q == 0) { return }
+
+    var %target_dir = $iif(%xdcc_dl_path != $null && $isdir(%xdcc_dl_path), %xdcc_dl_path, $getdir)
+    var %drive_letter = $left(%target_dir, 2), %raw_free = $disk(%drive_letter).free
+    if (%raw_free != $null) {
+      if ($int($calc(%raw_free / 1024 / 1024)) < 5000) {
+        did -i XDCC_GUI 12 1 [ERROR] Aborted: Less than 5GB free. | return
+      }
+    }
+
+    var %i = 1
+    while (%i <= %total_q) {
+      var %hdata = $did(XDCC_GUI, 22, %i).text
+      if (%hdata != $null) {
+        if (%xdcc_queue == $null) { set %xdcc_queue %hdata }
+        else { set %xdcc_queue %xdcc_queue $+ , $+ %hdata }
+      }
+      inc %i
+    }
+    did -r XDCC_GUI 17 | did -r XDCC_GUI 22
+    did -i XDCC_GUI 12 1 [System] Pushing queue to Active Tracker...
+
+    if (!$timer(XDCC_Queue)) { process_xdcc_queue | .timerXDCC_Queue 0 4 process_xdcc_queue }
+  }
+
+  elseif ($did == 42) { cancel_active_transfer }
+
+  ; --- Clear Completed (Safely reads the string) ---
+  elseif ($did == 43) {
+    var %i = $did(XDCC_GUI, 41).lines
+    while (%i > 0) {
+      if (Completed! isin $did(XDCC_GUI, 41, %i).text) {
+        did -d XDCC_GUI 41 %i | did -d XDCC_GUI 44 %i
+      }
+      dec %i
+    }
+    did -i XDCC_GUI 12 1 [System] Cleared completed transfers from tracker.
+  }
+}
+
+; --- Double Click Shortcuts ---
+on *:dialog:XDCC_GUI:dclick:9:{ add_to_queue }
+on *:dialog:XDCC_GUI:dclick:17:{ remove_from_queue }
+on *:dialog:XDCC_GUI:dclick:41:{ cancel_active_transfer }
+
+alias -l cancel_active_transfer {
+  var %i = $did(XDCC_GUI, 41, 0).sel
+  while (%i > 0) {
+    var %l = $did(XDCC_GUI, 41, %i).sel, %hdata = $did(XDCC_GUI, 44, %l).text
+    var %bot = $gettok(%hdata, 1, 164), %pack = $gettok(%hdata, 2, 164)
+    msg %bot xdcc cancel
+    did -i XDCC_GUI 12 1 [Cancelled] Sent cancel command to %bot for Pack # $+ %pack
+    did -d XDCC_GUI 41 %l | did -d XDCC_GUI 44 %l
+    dec %i
+  }
+}
+
+alias -l add_to_queue {
+  var %total_sel = $did(XDCC_GUI, 9, 0).sel
+  if (%total_sel == 0) return
+  var %i = 1
+  while (%i <= %total_sel) {
+    var %line_num = $did(XDCC_GUI, 9, %i).sel
+    did -a XDCC_GUI 17 $did(XDCC_GUI, 9, %line_num).text
+    did -a XDCC_GUI 22 $did(XDCC_GUI, 21, %line_num).text
+    inc %i
+  }
+}
+
+alias -l remove_from_queue {
+  var %i = $did(XDCC_GUI, 17, 0).sel
+  while (%i > 0) {
+    var %line_num = $did(XDCC_GUI, 17, %i).sel
+    did -d XDCC_GUI 17 %line_num | did -d XDCC_GUI 22 %line_num
+    dec %i
+  }
+}
+
+; --- The Execution Engine & Active Tracker Pipeline ---
+alias process_xdcc_queue {
+  if (%xdcc_queue == $null) { 
+    .timerXDCC_Queue off | if ($dialog(XDCC_GUI)) { did -i XDCC_GUI 12 1 [System] Batch Engine complete. Monitoring queues... }
+    return 
+  }
+
+  var %item = $gettok(%xdcc_queue, 1, 44)
+  var %bot = $gettok(%item, 1, 164), %pack = $gettok(%item, 2, 164), %title = $gettok(%item, 3, 164)
+
+  if ($dialog(XDCC_GUI)) {
+    var %time_str = $asctime($ctime, HH:nn:ss)
+    ; Fix: Used variables to prevent the Pipe character from splitting the command in mIRC
+    var %div = $chr(32) $+ $chr(124) $+ $chr(32)
+    var %display = $+([,%time_str,]) %bot » Pack # $+ %pack $+ %div $+ Status: Requested... $+ %div $+ %title
+    did -a XDCC_GUI 41 %display
+    did -a XDCC_GUI 44 %bot $+ $chr(164) $+ %pack $+ $chr(164) $+ %title $+ $chr(164) $+ %time_str
+  }
+
+  msg %bot xdcc send %pack
+
+  if ($numtok(%xdcc_queue, 44) == 1) { unset %xdcc_queue | .timerXDCC_Queue off }
+  else { set %xdcc_queue $deltok(%xdcc_queue, 1, 44) }
+}
+
+alias -l update_active_status {
+  var %bot = $1, %status = $2-
+  if (!$dialog(XDCC_GUI)) return
+  var %i = 1, %tot = $did(XDCC_GUI, 41).lines
+  while (%i <= %tot) {
+    var %hdata = $did(XDCC_GUI, 44, %i).text
+    if ($gettok(%hdata, 1, 164) == %bot) {
+      if (Completed! !isin $did(XDCC_GUI, 41, %i).text) {
+        var %pack = $gettok(%hdata, 2, 164), %title = $gettok(%hdata, 3, 164), %time_str = $gettok(%hdata, 4, 164)
+        var %div = $chr(32) $+ $chr(124) $+ $chr(32)
+        var %display = $+([,%time_str,]) %bot » Pack # $+ %pack $+ %div $+ Status: %status $+ %div $+ %title
+        did -o XDCC_GUI 41 %i %display
+      }
+    }
+    inc %i
+  }
+}
+
+; --- Bot Database Builder ---
+on *:TEXT:*:#:{
+  var %clean = $strip($1-), %bot = $nick, %pack = $null, %title = $null, %size = ?, %speed = ?
+  if ($regex(msg, %clean, /\/msg\s+(\S+)\s+XDCC\s+SEND\s+(\d+)/i)) {
+    %bot = $regml(msg, 1) | %pack = $regml(msg, 2)
+    if ($regex(sz, %clean, /\|\s*([\d\.]+[KMGT]B?)\s*\|/i)) { %size = $replace($regml(sz, 1), $chr(32), $null) }
+    if ($regex(tit, %clean, /\|\s*[\d\.]+[KMGT]B?\s*\|\s*(.+?)\s*\|\s*\/msg/i)) { %title = $trim($regml(tit, 1)) }
+  } 
+  elseif ($regex(xdcc, %clean, /(?:^|\s)#(\d+)\s+(?:\d+x\s+)?(?:\[[^\]]+\]\s+)?(.+)/i)) {
+    %pack = $regml(xdcc, 1) | %title = $regml(xdcc, 2)
+    if ($regex(sz, %clean, /\b(\d+(?:\.\d+)?\s*[MGT]B?)\b/i)) { %size = $replace($regml(sz, 1), $chr(32), $null) }
+  }
+
+  if (%title != $null && $len(%title) > 5) {
+    var %res = Any, %year = Any
+    if ($regex(res, %title, /(2160p|1080p|720p|480p)/i)) { %res = $regml(res, 1) }
+    if ($regex(yr, %title, /(19\d\d|20\d\d)/)) { %year = $regml(yr, 1) }
+    if ($regex(spd, %clean, /avg:\s*([\d\.]+\s*[KMGT]?i?B\/s)/i)) { %speed = $replace($regml(spd, 1), $chr(32), $null) }
+
+    if (!$hget(xdcc_v4)) hmake xdcc_v4 2000
+    hadd -m xdcc_v4 %title %bot $+ $chr(164) $+ %pack $+ $chr(164) $+ %res $+ $chr(164) $+ %year $+ $chr(164) $+ $ctime $+ $chr(164) $+ %size $+ $chr(164) $+ %speed
+  }
+}
+
+on *:NOTICE:*:?: {
+  var %msg = $strip($1-)
+  if ($dialog(XDCC_GUI)) {
+    if (xdcc isin %msg) || (queue isin %msg) || (pack isin %msg) || (position isin %msg) {
+      if ($regex(qpos, %msg, /(?:position|slot|queue)[^\d]*(\d+)/i)) {
+        update_active_status $nick Queue Pos $regml(qpos, 1)
+      }
+      elseif (sending isin %msg) || (starting isin %msg) {
+        update_active_status $nick Transferring...
+      }
+      elseif (full isin %msg) || (queued isin %msg) || (too many isin %msg) {
+        update_active_status $nick Stalled / Full
+      }
+    }
+  }
+}
+
+; --- Smart Completion Tracker & Lock Bypass Routing ---
+on *:FILERCVD:*: {
+  var %fname = $nopath($filename)
+  ntfy_alert %xdcc_ntfy_topic File Downloaded! %fname has finished transferring.
+
+  if ($dialog(XDCC_GUI)) { 
+    did -i XDCC_GUI 12 1 [Success] Downloaded: %fname 
+
+    ; Accurately match the finished file by verifying Bot Name + partial Title string
+    var %i = 1, %tot = $did(XDCC_GUI, 41).lines
+    while (%i <= %tot) {
+      var %hdata = $did(XDCC_GUI, 44, %i).text
+      if ($gettok(%hdata, 1, 164) == $nick) && (Completed! !isin $did(XDCC_GUI, 41, %i).text) {
+        var %title = $gettok(%hdata, 3, 164)
+        var %chunk = $left($remove(%title, $chr(32), ., _), 15)
+        var %fchunk = $remove(%fname, $chr(32), ., _)
+
+        if (%chunk isin %fchunk) {
+          var %bot = $nick, %pack = $gettok(%hdata, 2, 164), %time_str = $gettok(%hdata, 4, 164)
+          var %div = $chr(32) $+ $chr(124) $+ $chr(32)
+          var %display = $+([,%time_str,]) %bot » Pack # $+ %pack $+ %div $+ Status: Completed! $+ %div $+ %title
+          did -o XDCC_GUI 41 %i %display
+          break
+        }
+      }
+      inc %i
+    }
+  }
+
+  ; Bypass Windows File Locks by waiting exactly 1.5 seconds before routing the file
+  if (%xdcc_dl_path != $null) && ($isdir(%xdcc_dl_path)) {
+    var %target_file = %xdcc_dl_path $+ %fname
+    if ($filename != %target_file) {
+      ; Evaluate the immediate exact paths straight into the timer memory block
+      .timer -m 1 1500 rename $+(", $filename, ") $+(", %target_file, ")
+      if ($dialog(XDCC_GUI)) { .timer -m 1 1600 did -i XDCC_GUI 12 1 [System] Routed to: %xdcc_dl_path }
+    }
+  }
+}
